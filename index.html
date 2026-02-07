@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SWR3 Player</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a0a;
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    .player {
+      background: linear-gradient(145deg, #1a1a2e, #16213e);
+      border-radius: 20px;
+      padding: 32px;
+      width: 400px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+
+    .station {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .station-name {
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+
+    .show-name {
+      font-size: 13px;
+      color: #666;
+    }
+
+    .artwork {
+      width: 100%;
+      aspect-ratio: 1;
+      border-radius: 16px;
+      overflow: hidden;
+      margin-bottom: 24px;
+      background: #222;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .artwork img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: opacity 0.5s ease;
+    }
+
+    .artwork .placeholder {
+      font-size: 80px;
+      opacity: 0.2;
+    }
+
+    .track-info {
+      text-align: center;
+      margin-bottom: 24px;
+      min-height: 56px;
+    }
+
+    .track-title {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: opacity 0.4s ease;
+    }
+
+    .track-artist {
+      font-size: 16px;
+      color: #aaa;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: opacity 0.4s ease;
+    }
+
+    .track-info.updating .track-title,
+    .track-info.updating .track-artist {
+      opacity: 0;
+    }
+
+    .track-type {
+      display: inline-block;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-top: 8px;
+    }
+
+    .track-type.music { background: #1db954; color: #000; }
+    .track-type.other { background: #444; color: #ccc; }
+
+    /* Timeline / Scrubber */
+    .timeline {
+      margin-bottom: 20px;
+    }
+
+    .scrubber {
+      width: 100%;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 6px;
+      border-radius: 3px;
+      background: #333;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .scrubber::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+
+    .time-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: #666;
+      margin-top: 6px;
+    }
+
+    .live-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: #e53935;
+      color: #fff;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    .live-badge.behind {
+      background: #555;
+      color: #ccc;
+    }
+
+    .live-badge:hover { opacity: 0.8; }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+    }
+
+    .btn {
+      background: none;
+      border: none;
+      color: #fff;
+      cursor: pointer;
+      transition: transform 0.15s, opacity 0.15s;
+      padding: 8px;
+    }
+
+    .btn:hover { transform: scale(1.1); }
+    .btn:active { transform: scale(0.95); }
+    .btn:disabled { opacity: 0.3; cursor: default; transform: none; }
+
+    .btn svg { display: block; }
+
+    .btn-play {
+      width: 64px;
+      height: 64px;
+      background: #fff;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .btn-play svg { fill: #000; }
+
+    .btn-skip svg { fill: #fff; width: 28px; height: 28px; }
+
+    .volume-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .volume-icon { fill: #888; width: 18px; height: 18px; }
+
+    .volume-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 120px;
+      height: 4px;
+      border-radius: 2px;
+      background: #333;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .volume-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #888;
+      cursor: pointer;
+    }
+
+    .loading {
+      text-align: center;
+      color: #666;
+      font-size: 13px;
+      padding: 8px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="player">
+    <div class="station">
+      <div class="station-name">SWR3</div>
+      <div class="show-name" id="showName">Lädt...</div>
+    </div>
+
+    <div class="artwork" id="artwork">
+      <div class="placeholder">📻</div>
+    </div>
+
+    <div class="track-info">
+      <div class="track-title" id="trackTitle">—</div>
+      <div class="track-artist" id="trackArtist">—</div>
+    </div>
+
+    <div class="timeline">
+      <input type="range" class="scrubber" id="scrubber" min="0" max="1000" value="1000">
+      <div class="time-labels">
+        <span id="timeOffset">Live</span>
+        <span><span class="live-badge" id="liveBadge" onclick="goLive()">LIVE</span></span>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-skip" onclick="skip(-30)" title="-30s">
+        <svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/><text x="12" y="15.5" text-anchor="middle" font-size="7" font-weight="bold" fill="#fff">30</text></svg>
+      </button>
+      <button class="btn btn-play" id="playBtn" onclick="togglePlay()">
+        <svg id="playIcon" width="28" height="28" viewBox="0 0 24 24"><polygon points="6,3 20,12 6,21"/></svg>
+      </button>
+      <button class="btn btn-skip" onclick="skip(30)" title="+30s">
+        <svg viewBox="0 0 24 24"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/><text x="12" y="15.5" text-anchor="middle" font-size="7" font-weight="bold" fill="#fff">30</text></svg>
+      </button>
+    </div>
+
+    <div class="volume-row">
+      <svg class="volume-icon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+      <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="80">
+    </div>
+  </div>
+
+  <audio id="audio"></audio>
+
+  <script>
+    const STREAM_URL = 'https://swr3hlsaudio.akamaized.net/hls/live/2109007/swr3/master.m3u8?aggregator=web';
+    const META_URL = 'https://programm-api.ard.de/radio/api/publisher?publisher=urn:ard:publisher:73c0dd2d4e1e1514';
+
+    const audio = document.getElementById('audio');
+    const playBtn = document.getElementById('playBtn');
+    const playIcon = document.getElementById('playIcon');
+    const scrubber = document.getElementById('scrubber');
+    const timeOffset = document.getElementById('timeOffset');
+    const liveBadge = document.getElementById('liveBadge');
+    const volumeSlider = document.getElementById('volumeSlider');
+    const trackTitle = document.getElementById('trackTitle');
+    const trackArtist = document.getElementById('trackArtist');
+    const showName = document.getElementById('showName');
+    const artworkEl = document.getElementById('artwork');
+
+    let hls = null;
+    let isPlaying = false;
+    let isSeeking = false;
+
+    // Init HLS — prefer native HLS (Safari) over hls.js for audio streams
+    function initPlayer() {
+      const canNative = audio.canPlayType('application/vnd.apple.mpegurl');
+      if (canNative) {
+        // Safari / iOS — native HLS works best for audio
+        audio.src = STREAM_URL;
+        audio.addEventListener('loadedmetadata', () => {
+          updateScrubber();
+        });
+      } else if (Hls.isSupported()) {
+        hls = new Hls({
+          liveDurationInfinity: false,
+          liveBackBufferLength: 3600,
+          backBufferLength: 3600,
+          maxBufferLength: 30,
+          enableWorker: true,
+        });
+        hls.loadSource(STREAM_URL);
+        hls.attachMedia(audio);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          updateScrubber();
+        });
+        hls.on(Hls.Events.ERROR, (e, data) => {
+          if (data.fatal) {
+            console.error('HLS fatal error', data);
+            hls.destroy();
+            setTimeout(initPlayer, 3000);
+          }
+        });
+      }
+    }
+
+    function togglePlay() {
+      if (isPlaying) {
+        audio.pause();
+      } else {
+        audio.play().catch(console.error);
+      }
+    }
+
+    audio.addEventListener('play', () => {
+      isPlaying = true;
+      playIcon.innerHTML = '<rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/>';
+    });
+
+    audio.addEventListener('pause', () => {
+      isPlaying = false;
+      playIcon.innerHTML = '<polygon points="6,3 20,12 6,21"/>';
+    });
+
+    // Volume
+    volumeSlider.addEventListener('input', () => {
+      audio.volume = volumeSlider.value / 100;
+    });
+    audio.volume = 0.8;
+
+    // Scrubber
+    function getBufferedEnd() {
+      if (audio.buffered.length > 0) {
+        return audio.buffered.end(audio.buffered.length - 1);
+      }
+      return audio.duration || 0;
+    }
+
+    function getSeekableStart() {
+      if (audio.seekable.length > 0) {
+        return audio.seekable.start(0);
+      }
+      return 0;
+    }
+
+    function getSeekableEnd() {
+      if (audio.seekable.length > 0) {
+        return audio.seekable.end(audio.seekable.length - 1);
+      }
+      return audio.duration || 0;
+    }
+
+    function updateScrubber() {
+      if (isSeeking) return;
+
+      const start = getSeekableStart();
+      const end = getSeekableEnd();
+      const range = end - start;
+
+      if (range > 0) {
+        const pos = ((audio.currentTime - start) / range) * 1000;
+        scrubber.value = Math.min(1000, Math.max(0, pos));
+
+        const behindSec = Math.max(0, end - audio.currentTime);
+        if (behindSec < 5) {
+          timeOffset.textContent = 'Live';
+          liveBadge.classList.remove('behind');
+        } else {
+          timeOffset.textContent = '-' + formatTime(behindSec);
+          liveBadge.classList.add('behind');
+        }
+      }
+
+      requestAnimationFrame(updateScrubber);
+    }
+
+    scrubber.addEventListener('mousedown', () => isSeeking = true);
+    scrubber.addEventListener('touchstart', () => isSeeking = true);
+
+    scrubber.addEventListener('input', () => {
+      const start = getSeekableStart();
+      const end = getSeekableEnd();
+      const range = end - start;
+      const target = start + (scrubber.value / 1000) * range;
+      const behindSec = Math.max(0, end - target);
+
+      if (behindSec < 5) {
+        timeOffset.textContent = 'Live';
+      } else {
+        timeOffset.textContent = '-' + formatTime(behindSec);
+      }
+    });
+
+    function commitSeek() {
+      isSeeking = false;
+      const start = getSeekableStart();
+      const end = getSeekableEnd();
+      const range = end - start;
+      audio.currentTime = start + (scrubber.value / 1000) * range;
+    }
+
+    scrubber.addEventListener('mouseup', commitSeek);
+    scrubber.addEventListener('touchend', commitSeek);
+
+    function skip(seconds) {
+      const end = getSeekableEnd();
+      const start = getSeekableStart();
+      let target = audio.currentTime + seconds;
+      target = Math.max(start, Math.min(end, target));
+      audio.currentTime = target;
+    }
+
+    function goLive() {
+      audio.currentTime = getSeekableEnd();
+    }
+
+    function formatTime(sec) {
+      sec = Math.round(sec);
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return m + ':' + String(s).padStart(2, '0');
+    }
+
+    // Metadata polling
+    let lastTitle = '';
+
+    async function fetchMeta() {
+      try {
+        const res = await fetch(META_URL + '&_t=' + Date.now(), { cache: 'no-store' });
+        const data = await res.json();
+        if (data && data.length > 0) {
+          const item = data[0];
+
+          // Show info
+          if (item.title && item.subTitle) {
+            showName.textContent = item.title + ' · ' + item.subTitle;
+          }
+
+          // Track info
+          const clip = item.clip;
+          if (clip) {
+            const newTitle = clip.title + clip.artist;
+
+            if (newTitle !== lastTitle) {
+              lastTitle = newTitle;
+              const infoEl = document.querySelector('.track-info');
+
+              // Fade out
+              infoEl.classList.add('updating');
+              setTimeout(() => {
+                trackTitle.textContent = clip.title || '—';
+                trackArtist.textContent = clip.artist || '—';
+                // Fade in
+                infoEl.classList.remove('updating');
+              }, 400);
+
+              // Update artwork
+              if (clip.image && clip.image.url) {
+                const imgUrl = clip.image.url.replace('{width}', '400');
+                artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="this.parentElement.innerHTML='<div class=placeholder>📻</div>'">`;
+              } else {
+                artworkEl.innerHTML = '<div class="placeholder">📻</div>';
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Meta fetch error:', e);
+      }
+    }
+
+    // Init
+    initPlayer();
+    fetchMeta();
+    setInterval(fetchMeta, 20000);
+    requestAnimationFrame(updateScrubber);
+  </script>
+</body>
+</html>
