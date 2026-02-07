@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SWR3 Player</title>
+  <title>ARD Radio Player</title>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -26,6 +26,38 @@
       box-shadow: 0 20px 60px rgba(0,0,0,0.5);
     }
 
+    /* Station Switcher */
+    .station-switcher {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+
+    .station-btn {
+      background: #222;
+      border: 2px solid transparent;
+      color: #888;
+      padding: 8px 16px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      letter-spacing: 0.5px;
+    }
+
+    .station-btn:hover {
+      background: #2a2a3e;
+      color: #ccc;
+    }
+
+    .station-btn.active {
+      border-color: #4a6cf7;
+      background: #1a2a5e;
+      color: #fff;
+    }
+
     .station {
       text-align: center;
       margin-bottom: 24px;
@@ -37,6 +69,7 @@
       letter-spacing: 3px;
       color: #888;
       margin-bottom: 4px;
+      transition: opacity 0.3s ease;
     }
 
     .show-name {
@@ -97,19 +130,6 @@
     .track-info.updating .track-artist {
       opacity: 0;
     }
-
-    .track-type {
-      display: inline-block;
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      padding: 2px 8px;
-      border-radius: 4px;
-      margin-top: 8px;
-    }
-
-    .track-type.music { background: #1db954; color: #000; }
-    .track-type.other { background: #444; color: #ccc; }
 
     /* Timeline / Scrubber */
     .timeline {
@@ -232,19 +252,15 @@
       background: #888;
       cursor: pointer;
     }
-
-    .loading {
-      text-align: center;
-      color: #666;
-      font-size: 13px;
-      padding: 8px 0;
-    }
   </style>
 </head>
 <body>
   <div class="player">
+    <!-- Station Switcher -->
+    <div class="station-switcher" id="stationSwitcher"></div>
+
     <div class="station">
-      <div class="station-name">SWR3</div>
+      <div class="station-name" id="stationName">—</div>
       <div class="show-name" id="showName">Lädt...</div>
     </div>
 
@@ -286,9 +302,26 @@
   <audio id="audio"></audio>
 
   <script>
-    const STREAM_URL = 'https://swr3hlsaudio.akamaized.net/hls/live/2109007/swr3/master.m3u8?aggregator=web';
-    const META_URL = 'https://programm-api.ard.de/radio/api/publisher?publisher=urn:ard:publisher:73c0dd2d4e1e1514';
+    // ── Station Config ──────────────────────────────────────────
+    const STATIONS = [
+      {
+        id: 'swr3',
+        name: 'SWR3',
+        stream: 'https://swr3hlsaudio.akamaized.net/hls/live/2109007/swr3/master.m3u8?aggregator=web',
+        meta: 'https://programm-api.ard.de/radio/api/publisher?publisher=urn:ard:publisher:73c0dd2d4e1e1514',
+      },
+      {
+        id: 'radioeins',
+        name: 'radioeins',
+        stream: 'https://radioeins.akamaized.net/hls/live/2016930/rbb_radioeins/master.m3u8',
+        meta: 'https://programm-api.ard.de/radio/api/publisher?publisher=urn:ard:publisher:9e8b2b6352741adb',
+      },
+    ];
 
+    let currentStation = STATIONS[0];
+    let metaInterval = null;
+
+    // ── DOM refs ────────────────────────────────────────────────
     const audio = document.getElementById('audio');
     const playBtn = document.getElementById('playBtn');
     const playIcon = document.getElementById('playIcon');
@@ -298,22 +331,73 @@
     const volumeSlider = document.getElementById('volumeSlider');
     const trackTitle = document.getElementById('trackTitle');
     const trackArtist = document.getElementById('trackArtist');
+    const stationName = document.getElementById('stationName');
     const showName = document.getElementById('showName');
     const artworkEl = document.getElementById('artwork');
+    const switcherEl = document.getElementById('stationSwitcher');
 
     let hls = null;
     let isPlaying = false;
     let isSeeking = false;
+    let lastTitle = '';
 
-    // Init HLS — prefer native HLS (Safari) over hls.js for audio streams
+    // ── Build station buttons ───────────────────────────────────
+    function buildSwitcher() {
+      switcherEl.innerHTML = '';
+      STATIONS.forEach((s) => {
+        const btn = document.createElement('button');
+        btn.className = 'station-btn' + (s.id === currentStation.id ? ' active' : '');
+        btn.textContent = s.name;
+        btn.onclick = () => switchStation(s.id);
+        switcherEl.appendChild(btn);
+      });
+    }
+
+    function switchStation(id) {
+      if (currentStation.id === id) return;
+      const station = STATIONS.find(s => s.id === id);
+      if (!station) return;
+
+      currentStation = station;
+      lastTitle = '';
+      trackTitle.textContent = '—';
+      trackArtist.textContent = '—';
+      showName.textContent = 'Lädt...';
+      artworkEl.innerHTML = '<div class="placeholder">📻</div>';
+
+      buildSwitcher();
+      destroyPlayer();
+      initPlayer();
+      fetchMeta();
+
+      // Restart meta polling
+      if (metaInterval) clearInterval(metaInterval);
+      metaInterval = setInterval(fetchMeta, 20000);
+
+      // Auto-play on switch
+      audio.play().catch(() => {});
+    }
+
+    // ── HLS Player ──────────────────────────────────────────────
+    function destroyPlayer() {
+      audio.pause();
+      if (hls) {
+        hls.destroy();
+        hls = null;
+      }
+      audio.removeAttribute('src');
+      audio.load();
+    }
+
     function initPlayer() {
+      stationName.textContent = currentStation.name;
       const canNative = audio.canPlayType('application/vnd.apple.mpegurl');
+
       if (canNative) {
-        // Safari / iOS — native HLS works best for audio
-        audio.src = STREAM_URL;
+        audio.src = currentStation.stream;
         audio.addEventListener('loadedmetadata', () => {
           updateScrubber();
-        });
+        }, { once: true });
       } else if (Hls.isSupported()) {
         hls = new Hls({
           liveDurationInfinity: false,
@@ -322,7 +406,7 @@
           maxBufferLength: 30,
           enableWorker: true,
         });
-        hls.loadSource(STREAM_URL);
+        hls.loadSource(currentStation.stream);
         hls.attachMedia(audio);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           updateScrubber();
@@ -331,12 +415,14 @@
           if (data.fatal) {
             console.error('HLS fatal error', data);
             hls.destroy();
+            hls = null;
             setTimeout(initPlayer, 3000);
           }
         });
       }
     }
 
+    // ── Play / Pause ────────────────────────────────────────────
     function togglePlay() {
       if (isPlaying) {
         audio.pause();
@@ -355,36 +441,23 @@
       playIcon.innerHTML = '<polygon points="6,3 20,12 6,21"/>';
     });
 
-    // Volume
+    // ── Volume ──────────────────────────────────────────────────
     volumeSlider.addEventListener('input', () => {
       audio.volume = volumeSlider.value / 100;
     });
     audio.volume = 0.8;
 
-    // Scrubber
-    function getBufferedEnd() {
-      if (audio.buffered.length > 0) {
-        return audio.buffered.end(audio.buffered.length - 1);
-      }
-      return audio.duration || 0;
-    }
-
+    // ── Scrubber / DVR ──────────────────────────────────────────
     function getSeekableStart() {
-      if (audio.seekable.length > 0) {
-        return audio.seekable.start(0);
-      }
-      return 0;
+      return audio.seekable.length > 0 ? audio.seekable.start(0) : 0;
     }
 
     function getSeekableEnd() {
-      if (audio.seekable.length > 0) {
-        return audio.seekable.end(audio.seekable.length - 1);
-      }
-      return audio.duration || 0;
+      return audio.seekable.length > 0 ? audio.seekable.end(audio.seekable.length - 1) : (audio.duration || 0);
     }
 
     function updateScrubber() {
-      if (isSeeking) return;
+      if (isSeeking) { requestAnimationFrame(updateScrubber); return; }
 
       const start = getSeekableStart();
       const end = getSeekableEnd();
@@ -416,12 +489,7 @@
       const range = end - start;
       const target = start + (scrubber.value / 1000) * range;
       const behindSec = Math.max(0, end - target);
-
-      if (behindSec < 5) {
-        timeOffset.textContent = 'Live';
-      } else {
-        timeOffset.textContent = '-' + formatTime(behindSec);
-      }
+      timeOffset.textContent = behindSec < 5 ? 'Live' : '-' + formatTime(behindSec);
     });
 
     function commitSeek() {
@@ -439,8 +507,7 @@
       const end = getSeekableEnd();
       const start = getSeekableStart();
       let target = audio.currentTime + seconds;
-      target = Math.max(start, Math.min(end, target));
-      audio.currentTime = target;
+      audio.currentTime = Math.max(start, Math.min(end, target));
     }
 
     function goLive() {
@@ -454,22 +521,18 @@
       return m + ':' + String(s).padStart(2, '0');
     }
 
-    // Metadata polling
-    let lastTitle = '';
-
+    // ── Metadata ────────────────────────────────────────────────
     async function fetchMeta() {
       try {
-        const res = await fetch(META_URL + '&_t=' + Date.now(), { cache: 'no-store' });
+        const res = await fetch(currentStation.meta + '&_t=' + Date.now(), { cache: 'no-store' });
         const data = await res.json();
         if (data && data.length > 0) {
           const item = data[0];
 
-          // Show info
-          if (item.title && item.subTitle) {
-            showName.textContent = item.title + ' · ' + item.subTitle;
+          if (item.title) {
+            showName.textContent = item.title + (item.subTitle ? ' · ' + item.subTitle : '');
           }
 
-          // Track info
           const clip = item.clip;
           if (clip) {
             const newTitle = clip.title + clip.artist;
@@ -478,16 +541,13 @@
               lastTitle = newTitle;
               const infoEl = document.querySelector('.track-info');
 
-              // Fade out
               infoEl.classList.add('updating');
               setTimeout(() => {
                 trackTitle.textContent = clip.title || '—';
                 trackArtist.textContent = clip.artist || '—';
-                // Fade in
                 infoEl.classList.remove('updating');
               }, 400);
 
-              // Update artwork
               if (clip.image && clip.image.url) {
                 const imgUrl = clip.image.url.replace('{width}', '400');
                 artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="this.parentElement.innerHTML='<div class=placeholder>📻</div>'">`;
@@ -502,10 +562,11 @@
       }
     }
 
-    // Init
+    // ── Init ────────────────────────────────────────────────────
+    buildSwitcher();
     initPlayer();
     fetchMeta();
-    setInterval(fetchMeta, 20000);
+    metaInterval = setInterval(fetchMeta, 20000);
     requestAnimationFrame(updateScrubber);
   </script>
 </body>
