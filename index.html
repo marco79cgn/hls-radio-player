@@ -67,14 +67,20 @@
       font-size: 14px;
       text-transform: uppercase;
       letter-spacing: 3px;
-      color: #888;
+      color: #ddd;
       margin-bottom: 4px;
       transition: opacity 0.3s ease;
     }
 
+    .show-time {
+      font-size: 12px;
+      color: #999;
+      margin-bottom: 4px;
+    }
+
     .show-name {
       font-size: 13px;
-      color: #666;
+      color: #bbb;
     }
 
     .artwork {
@@ -261,6 +267,7 @@
 
     <div class="station">
       <div class="station-name" id="stationName">—</div>
+      <div class="show-time" id="showTime"></div>
       <div class="show-name" id="showName">Lädt...</div>
     </div>
 
@@ -309,18 +316,21 @@
         name: 'SWR3',
         stream: 'https://swr3hlsaudio.akamaized.net/hls/live/2109007/swr3/master.m3u8?aggregator=web',
         meta: 'https://programm-api.ard.de/radio/api/publisher?publisher=urn:ard:publisher:73c0dd2d4e1e1514',
+        logo: 'https://api.ardmediathek.de/image-service/image-collections/urn:ard:image-collection:b8b8d5cd75331f20/1x1?imwidth=720&w=720',
       },
       {
         id: 'radioeins',
         name: 'radioeins',
         stream: 'https://radioeins.akamaized.net/hls/live/2016930/rbb_radioeins/master.m3u8',
         meta: 'https://programm-api.ard.de/radio/api/publisher?publisher=urn:ard:publisher:9e8b2b6352741adb',
+        logo: 'https://api.ardmediathek.de/image-service/image-collections/urn:ard:image-collection:e4bae6eda2e0e427/1x1?imwidth=720&w=720',
       },
       {
         id: 'hr1',
         name: 'hr1',
         stream: 'https://hlshr1.akamaized.net/hls/live/2016533/hr1rheinmain/master.m3u8',
         meta: 'https://programm-api.ard.de/radio/api/publisher?publisher=urn:ard:publisher:bb3ac9eaa762650d',
+        logo: 'https://api.ardmediathek.de/image-service/image-collections/urn:ard:image-collection:84aafeba1d9406d8/1x1?imwidth=720&w=720',
       }
     ];
 
@@ -338,6 +348,7 @@
     const trackTitle = document.getElementById('trackTitle');
     const trackArtist = document.getElementById('trackArtist');
     const stationName = document.getElementById('stationName');
+    const showTime = document.getElementById('showTime');
     const showName = document.getElementById('showName');
     const artworkEl = document.getElementById('artwork');
     const switcherEl = document.getElementById('stationSwitcher');
@@ -533,10 +544,20 @@
         const res = await fetch(currentStation.meta + '&_t=' + Date.now(), { cache: 'no-store' });
         const data = await res.json();
         if (data && data.length > 0) {
-          const item = data[0];
+          // Find first entry with track metadata, fallback to first entry
+          const item = data.find(d => d.clip) || data[0];
 
           if (item.title) {
             showName.textContent = item.title + (item.subTitle ? ' · ' + item.subTitle : '');
+            
+            // Display show time range if available
+            if (item.start && item.end) {
+              const startTime = new Date(item.start).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+              const endTime = new Date(item.end).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+              showTime.textContent = `${startTime}–${endTime} Uhr`;
+            } else {
+              showTime.textContent = '';
+            }
           }
 
           const clip = item.clip;
@@ -556,9 +577,15 @@
                 infoEl.classList.remove('updating');
               }, 400);
 
-              if (clip.image && clip.image.url) {
+              // Check if we have a real cover (not a placeholder)
+              const hasRealCover = clip.image && clip.image.url && !clip.image.url.includes('cover_defaults');
+
+              if (hasRealCover) {
                 const imgUrl = clip.image.url.replace('{width}', '400');
-                artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="this.parentElement.innerHTML='<div class=placeholder>📻</div>'">`;
+                const fallback = currentStation.logo ? `this.src='${currentStation.logo}'` : `this.parentElement.innerHTML='<div class=placeholder>📻</div>'`;
+                artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="${fallback}">`;
+              } else if (currentStation.logo) {
+                artworkEl.innerHTML = `<img src="${currentStation.logo}" alt="${currentStation.name} Logo">`;
               } else {
                 artworkEl.innerHTML = '<div class="placeholder">📻</div>';
               }
@@ -577,11 +604,14 @@
                 infoEl.classList.remove('updating');
               }, 400);
 
-              // Use show/moderator image if available
-              const img = item.images && item.images.find(i => i.url);
+              // Use show/moderator image if available (skip placeholders), fallback to station logo
+              const img = item.images && item.images.find(i => i.url && !i.url.includes('cover_defaults'));
               if (img) {
                 const imgUrl = img.url.replace('{width}', '400');
-                artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="this.parentElement.innerHTML='<div class=placeholder>📻</div>'">`;
+                const fallback = currentStation.logo ? `this.src='${currentStation.logo}'` : `this.parentElement.innerHTML='<div class=placeholder>📻</div>'`;
+                artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="${fallback}">`;
+              } else if (currentStation.logo) {
+                artworkEl.innerHTML = `<img src="${currentStation.logo}" alt="${currentStation.name} Logo">`;
               } else {
                 artworkEl.innerHTML = '<div class="placeholder">📻</div>';
               }
