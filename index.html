@@ -418,9 +418,13 @@
       } else if (Hls.isSupported()) {
         hls = new Hls({
           liveDurationInfinity: false,
-          liveBackBufferLength: 3600,
-          backBufferLength: 3600,
-          maxBufferLength: 30,
+          liveBackBufferLength: 1800,
+          backBufferLength: 1800,
+          maxBufferLength: 600,
+          maxMaxBufferLength: 1800,
+          lowLatencyMode: false,
+          liveSyncDurationCount: 3,
+          liveMaxLatencyDurationCount: 12,
           enableWorker: true,
         });
         hls.loadSource(currentStation.stream);
@@ -474,7 +478,16 @@
         }
       }
 
-      // Fallback for non-live streams with finite duration
+      // Chromium + hls.js can expose useful DVR only via buffered ranges
+      if (audio.buffered.length > 0) {
+        const start = audio.buffered.start(0);
+        const end = audio.buffered.end(audio.buffered.length - 1);
+        if (Number.isFinite(start) && Number.isFinite(end) && end - start > 5) {
+          return { start, end };
+        }
+      }
+
+      // Fallback for VOD streams with finite duration
       if (Number.isFinite(audio.duration) && audio.duration > 0) {
         return { start: 0, end: audio.duration };
       }
