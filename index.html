@@ -470,19 +470,24 @@
 
     // ── Scrubber / DVR ──────────────────────────────────────────
     function getSeekableRange() {
+      // Prefer hls.js level timeline (works better than media buffered/seekable in Chromium)
+      if (hls && hls.levels && hls.levels.length > 0) {
+        const level = hls.levels[hls.currentLevel] || hls.levels[0];
+        const details = level && level.details;
+        if (details && details.fragments && details.fragments.length > 1) {
+          const start = details.fragments[0].start;
+          const lastFrag = details.fragments[details.fragments.length - 1];
+          const end = Number.isFinite(details.edge) ? details.edge : (lastFrag.start + lastFrag.duration);
+          if (Number.isFinite(start) && Number.isFinite(end) && end - start > 20) {
+            return { start, end };
+          }
+        }
+      }
+
       if (audio.seekable.length > 0) {
         const start = audio.seekable.start(0);
         const end = audio.seekable.end(audio.seekable.length - 1);
         if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
-          return { start, end };
-        }
-      }
-
-      // Chromium + hls.js can expose useful DVR only via buffered ranges
-      if (audio.buffered.length > 0) {
-        const start = audio.buffered.start(0);
-        const end = audio.buffered.end(audio.buffered.length - 1);
-        if (Number.isFinite(start) && Number.isFinite(end) && end - start > 5) {
           return { start, end };
         }
       }
@@ -567,6 +572,11 @@
     }
 
     function goLive() {
+      if (hls && Number.isFinite(hls.liveSyncPosition)) {
+        audio.currentTime = hls.liveSyncPosition;
+        return;
+      }
+
       const rangeInfo = getSeekableRange();
       if (!rangeInfo) return;
       audio.currentTime = rangeInfo.end;
