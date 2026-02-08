@@ -470,16 +470,17 @@
 
     // ── Scrubber / DVR ──────────────────────────────────────────
     function getSeekableRange() {
-      // Prefer hls.js level timeline (works better than media buffered/seekable in Chromium)
-      if (hls && hls.levels && hls.levels.length > 0) {
-        const level = hls.levels[hls.currentLevel] || hls.levels[0];
-        const details = level && level.details;
+      // hls.js exposes a stable live timeline even when media.seekable is tiny in Chromium
+      if (hls) {
+        const details = hls.latestLevelDetails ||
+          ((hls.levels || []).find(l => l && l.details && l.details.fragments && l.details.fragments.length > 1) || {}).details;
+
         if (details && details.fragments && details.fragments.length > 1) {
           const start = details.fragments[0].start;
           const lastFrag = details.fragments[details.fragments.length - 1];
           const end = Number.isFinite(details.edge) ? details.edge : (lastFrag.start + lastFrag.duration);
-          if (Number.isFinite(start) && Number.isFinite(end) && end - start > 20) {
-            return { start, end };
+          if (Number.isFinite(start) && Number.isFinite(end) && end - start > 5) {
+            return { start, end, source: 'hls' };
           }
         }
       }
@@ -488,13 +489,13 @@
         const start = audio.seekable.start(0);
         const end = audio.seekable.end(audio.seekable.length - 1);
         if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
-          return { start, end };
+          return { start, end, source: 'media' };
         }
       }
 
       // Fallback for VOD streams with finite duration
       if (Number.isFinite(audio.duration) && audio.duration > 0) {
-        return { start: 0, end: audio.duration };
+        return { start: 0, end: audio.duration, source: 'vod' };
       }
 
       return null;
@@ -549,6 +550,16 @@
       timeOffset.textContent = behindSec < 5 ? 'Live' : '-' + formatTime(behindSec);
     });
 
+    function seekTo(target) {
+      if (!Number.isFinite(target)) return;
+
+      if (hls) {
+        // In Chromium this helps hls.js load from a DVR offset even when media.seekable is limited
+        hls.startLoad(target);
+      }
+      audio.currentTime = target;
+    }
+
     function commitSeek() {
       isSeeking = false;
       const rangeInfo = getSeekableRange();
@@ -556,7 +567,8 @@
 
       const { start, end } = rangeInfo;
       const range = end - start;
-      audio.currentTime = start + (scrubber.value / 1000) * range;
+      const target = start + (scrubber.value / 1000) * range;
+      seekTo(target);
     }
 
     scrubber.addEventListener('mouseup', commitSeek);
@@ -568,18 +580,19 @@
 
       const { start, end } = rangeInfo;
       let target = audio.currentTime + seconds;
-      audio.currentTime = Math.max(start, Math.min(end, target));
+      target = Math.max(start, Math.min(end, target));
+      seekTo(target);
     }
 
     function goLive() {
       if (hls && Number.isFinite(hls.liveSyncPosition)) {
-        audio.currentTime = hls.liveSyncPosition;
+        seekTo(hls.liveSyncPosition);
         return;
       }
 
       const rangeInfo = getSeekableRange();
       if (!rangeInfo) return;
-      audio.currentTime = rangeInfo.end;
+      seekTo(rangeInfo.end);
     }
 
     function formatTime(sec) {
