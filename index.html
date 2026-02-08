@@ -465,43 +465,39 @@
     audio.volume = 0.8;
 
     // ── Scrubber / DVR ──────────────────────────────────────────
-    function getSeekableStart() {
+    function getSeekableRange() {
       if (audio.seekable.length > 0) {
         const start = audio.seekable.start(0);
-        if (Number.isFinite(start)) return start;
-      }
-      return Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
-    }
-
-    function getSeekableEnd() {
-      if (audio.seekable.length > 0) {
         const end = audio.seekable.end(audio.seekable.length - 1);
-        if (Number.isFinite(end)) return end;
+        if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+          return { start, end };
+        }
       }
 
-      if (audio.buffered.length > 0) {
-        const bufferedEnd = audio.buffered.end(audio.buffered.length - 1);
-        if (Number.isFinite(bufferedEnd)) return bufferedEnd;
+      // Fallback for non-live streams with finite duration
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        return { start: 0, end: audio.duration };
       }
 
-      if (Number.isFinite(audio.duration)) return audio.duration;
-      return Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+      return null;
     }
 
     function updateScrubber() {
       if (isSeeking) { requestAnimationFrame(updateScrubber); return; }
 
-      const start = getSeekableStart();
-      const end = getSeekableEnd();
-      const range = end - start;
-
-      if (!Number.isFinite(range) || range <= 0) {
+      const rangeInfo = getSeekableRange();
+      if (!rangeInfo) {
         scrubber.value = 1000;
+        scrubber.disabled = true;
         timeOffset.textContent = 'Live';
         liveBadge.classList.remove('behind');
         requestAnimationFrame(updateScrubber);
         return;
       }
+
+      scrubber.disabled = false;
+      const { start, end } = rangeInfo;
+      const range = end - start;
 
       const pos = ((audio.currentTime - start) / range) * 1000;
       scrubber.value = Math.min(1000, Math.max(0, pos));
@@ -522,8 +518,13 @@
     scrubber.addEventListener('touchstart', () => isSeeking = true);
 
     scrubber.addEventListener('input', () => {
-      const start = getSeekableStart();
-      const end = getSeekableEnd();
+      const rangeInfo = getSeekableRange();
+      if (!rangeInfo) {
+        timeOffset.textContent = 'Live';
+        return;
+      }
+
+      const { start, end } = rangeInfo;
       const range = end - start;
       const target = start + (scrubber.value / 1000) * range;
       const behindSec = Math.max(0, end - target);
@@ -532,8 +533,10 @@
 
     function commitSeek() {
       isSeeking = false;
-      const start = getSeekableStart();
-      const end = getSeekableEnd();
+      const rangeInfo = getSeekableRange();
+      if (!rangeInfo) return;
+
+      const { start, end } = rangeInfo;
       const range = end - start;
       audio.currentTime = start + (scrubber.value / 1000) * range;
     }
@@ -542,14 +545,18 @@
     scrubber.addEventListener('touchend', commitSeek);
 
     function skip(seconds) {
-      const end = getSeekableEnd();
-      const start = getSeekableStart();
+      const rangeInfo = getSeekableRange();
+      if (!rangeInfo) return;
+
+      const { start, end } = rangeInfo;
       let target = audio.currentTime + seconds;
       audio.currentTime = Math.max(start, Math.min(end, target));
     }
 
     function goLive() {
-      audio.currentTime = getSeekableEnd();
+      const rangeInfo = getSeekableRange();
+      if (!rangeInfo) return;
+      audio.currentTime = rangeInfo.end;
     }
 
     function formatTime(sec) {
