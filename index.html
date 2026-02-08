@@ -316,6 +316,12 @@
         stream: 'https://radioeins.akamaized.net/hls/live/2016930/rbb_radioeins/master.m3u8',
         meta: 'https://programm-api.ard.de/radio/api/publisher?publisher=urn:ard:publisher:9e8b2b6352741adb',
       },
+      {
+        id: 'hr1',
+        name: 'hr1',
+        stream: 'https://hlshr1.akamaized.net/hls/live/2016533/hr1rheinmain/master.m3u8',
+        meta: 'https://programm-api.ard.de/radio/api/publisher?publisher=urn:ard:publisher:bb3ac9eaa762650d',
+      }
     ];
 
     let currentStation = STATIONS[0];
@@ -534,12 +540,14 @@
           }
 
           const clip = item.clip;
+          const infoEl = document.querySelector('.track-info');
+
           if (clip) {
+            // Station provides track-level metadata (e.g. SWR3, radioeins)
             const newTitle = clip.title + clip.artist;
 
             if (newTitle !== lastTitle) {
               lastTitle = newTitle;
-              const infoEl = document.querySelector('.track-info');
 
               infoEl.classList.add('updating');
               setTimeout(() => {
@@ -550,6 +558,29 @@
 
               if (clip.image && clip.image.url) {
                 const imgUrl = clip.image.url.replace('{width}', '400');
+                artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="this.parentElement.innerHTML='<div class=placeholder>📻</div>'">`;
+              } else {
+                artworkEl.innerHTML = '<div class="placeholder">📻</div>';
+              }
+            }
+          } else {
+            // Station only provides show-level metadata (e.g. hr1)
+            const newTitle = (item.title || '') + (item.subTitle || '');
+
+            if (newTitle !== lastTitle) {
+              lastTitle = newTitle;
+
+              infoEl.classList.add('updating');
+              setTimeout(() => {
+                trackTitle.textContent = item.title || '—';
+                trackArtist.textContent = item.subTitle || '';
+                infoEl.classList.remove('updating');
+              }, 400);
+
+              // Use show/moderator image if available
+              const img = item.images && item.images.find(i => i.url);
+              if (img) {
+                const imgUrl = img.url.replace('{width}', '400');
                 artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="this.parentElement.innerHTML='<div class=placeholder>📻</div>'">`;
               } else {
                 artworkEl.innerHTML = '<div class="placeholder">📻</div>';
