@@ -297,7 +297,7 @@
     }
 
     .btn-airplay {
-      display: none; /* Hidden by default, shown only in Safari */
+      display: flex; /* Always show for consistent layout */
       background: none;
       border: none;
       cursor: pointer;
@@ -320,6 +320,16 @@
       fill: #fff;
       width: 20px;
       height: 20px;
+    }
+
+    .btn-airplay.disabled {
+      opacity: 0.2;
+      cursor: default;
+      pointer-events: none;
+    }
+
+    .btn-airplay.disabled:hover {
+      transform: none;
     }
   </style>
 </head>
@@ -435,6 +445,8 @@
     let isSeekInProgress = false;  // Track active seek operations
     let frozenLiveRef = null;  // Frozen live reference for time-behind calculation
     let lastTitle = '';
+    let isLive = true;  // Track if we're currently at live edge or behind
+    let forceArtworkUpdate = false;  // Force artwork update even if song hasn't changed
 
     // ── Build station buttons ───────────────────────────────────
     function buildSwitcher() {
@@ -455,6 +467,9 @@
 
       currentStation = station;
       lastTitle = '';
+      isLive = true;  // Reset to live when switching stations
+      frozenLiveRef = null;
+      forceArtworkUpdate = true;  // Force artwork update on station switch
       trackTitle.textContent = '—';
       trackArtist.textContent = '—';
       showName.textContent = 'Lädt...';
@@ -633,13 +648,19 @@
       }
     }
 
-    // ── AirPlay (Safari only) ───────────────────────────────────
+    // ── AirPlay ─────────────────────────────────────────────────
     const airplayBtn = document.getElementById('airplayBtn');
     
-    // Show AirPlay button in Safari
+    // Check if AirPlay is available (Safari only)
     const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-    if (isSafari && window.WebKitPlaybackTargetAvailabilityEvent) {
-      airplayBtn.style.display = 'flex';
+    const hasAirPlay = isSafari && window.WebKitPlaybackTargetAvailabilityEvent;
+    
+    if (!hasAirPlay) {
+      // Show disabled placeholder in non-Safari browsers
+      airplayBtn.classList.add('disabled');
+      airplayBtn.title = 'AirPlay (nur in Safari verfügbar)';
+    } else {
+      airplayBtn.title = 'AirPlay';
     }
 
     function showAirPlay() {
@@ -726,6 +747,72 @@
       return end;
     }
 
+    function getClockTimeAtPosition(position) {
+      // Get actual clock time for a given playback position using HLS program-date-time
+      if (!hls || !hls.levels || hls.levels.length === 0) return null;
+      
+      // Find level details with fragments
+      let details = null;
+      const currentLevel = hls.levels[hls.currentLevel];
+      if (currentLevel && currentLevel.details && currentLevel.details.fragments) {
+        details = currentLevel.details;
+      } else {
+        // Fallback: search for any valid level
+        for (let i = 0; i < hls.levels.length; i++) {
+          const level = hls.levels[i];
+          if (level && level.details && level.details.fragments && level.details.fragments.length > 0) {
+            details = level.details;
+            break;
+          }
+        }
+      }
+      
+      if (!details || !details.fragments || details.fragments.length === 0) return null;
+      
+      // Find the fragment that contains this position
+      const fragments = details.fragments;
+      for (let i = 0; i < fragments.length; i++) {
+        const frag = fragments[i];
+        const fragEnd = frag.start + frag.duration;
+        
+        if (position >= frag.start && position < fragEnd) {
+          // Found the fragment! Now calculate the exact time
+          if (frag.programDateTime) {
+            const offsetInFragment = position - frag.start;
+            const clockTime = frag.programDateTime + (offsetInFragment * 1000); // programDateTime is in ms
+            return new Date(clockTime);
+          }
+        }
+      }
+      
+      // Fallback: Use first fragment as reference
+      const firstFrag = fragments[0];
+      if (firstFrag.programDateTime) {
+        const offsetFromStart = position - firstFrag.start;
+        const clockTime = firstFrag.programDateTime + (offsetFromStart * 1000);
+        return new Date(clockTime);
+      }
+      
+      return null;
+    }
+
+    function formatClockTime(date) {
+      if (!date) return null;
+      const h = String(date.getHours()).padStart(2, '0');
+      const m = String(date.getMinutes()).padStart(2, '0');
+      const s = String(date.getSeconds()).padStart(2, '0');
+      return `${h}:${m}:${s}`;
+    }
+
+    function showStationLogo() {
+      // Show station logo when not live
+      if (currentStation.logo) {
+        artworkEl.innerHTML = `<img src="${currentStation.logo}" alt="${currentStation.name} Logo">`;
+      } else {
+        artworkEl.innerHTML = '<div class="placeholder">📻</div>';
+      }
+    }
+
     function updateScrubber() {
       const rangeInfo = getSeekableRange();
       if (!rangeInfo) {
@@ -759,9 +846,28 @@
         timeOffset.textContent = 'Live';
         liveBadge.classList.remove('behind');
         frozenLiveRef = null;  // Reset frozen ref when we're live
+        
+        // Switched back to live - restore cover art if needed
+        if (!isLive) {
+          isLive = true;
+          forceArtworkUpdate = true;  // Force artwork update
+          fetchMeta();  // Refresh metadata to show current cover
+        }
       } else {
-        timeOffset.textContent = '-' + formatTime(behindSec);
+        // Show actual clock time instead of negative offset
+        const clockTime = getClockTimeAtPosition(audio.currentTime);
+        if (clockTime) {
+          timeOffset.textContent = formatClockTime(clockTime);
+        } else {
+          timeOffset.textContent = '-' + formatTime(behindSec); // Fallback
+        }
         liveBadge.classList.add('behind');
+        
+        // Behind live - show station logo instead of cover
+        if (isLive) {
+          isLive = false;
+          showStationLogo();
+        }
       }
 
       // ONLY update scrubber position if user is NOT dragging and no seek in progress
@@ -789,7 +895,18 @@
       const target = start + (scrubber.value / 1000) * range;
       const liveRef = getLiveReference(end);
       const behindSec = Math.max(0, liveRef - target);
-      timeOffset.textContent = behindSec < 6 ? 'Live' : '-' + formatTime(behindSec);
+      
+      if (behindSec < 6) {
+        timeOffset.textContent = 'Live';
+      } else {
+        // Show actual clock time during scrubbing
+        const clockTime = getClockTimeAtPosition(target);
+        if (clockTime) {
+          timeOffset.textContent = formatClockTime(clockTime);
+        } else {
+          timeOffset.textContent = '-' + formatTime(behindSec); // Fallback
+        }
+      }
     });
 
     function seekTo(target) {
@@ -928,6 +1045,13 @@
     function goLive() {
       // Clear frozen ref - we're going back to live
       frozenLiveRef = null;
+      isLive = true;  // Mark as live immediately
+      
+      // Force artwork update even if song hasn't changed
+      forceArtworkUpdate = true;
+      
+      // Refresh metadata to show current cover
+      fetchMeta();
       
       // Try hls.js liveSyncPosition first (most accurate)
       if (hls && Number.isFinite(hls.liveSyncPosition)) {
@@ -978,53 +1102,67 @@
             // Station provides track-level metadata (e.g. SWR3, radioeins)
             const newTitle = clip.title + clip.artist;
 
-            if (newTitle !== lastTitle) {
-              lastTitle = newTitle;
+            if (newTitle !== lastTitle || forceArtworkUpdate) {
+              if (newTitle !== lastTitle) {
+                lastTitle = newTitle;
 
-              infoEl.classList.add('updating');
-              setTimeout(() => {
-                trackTitle.textContent = clip.title || '—';
-                trackArtist.textContent = clip.artist || '—';
-                infoEl.classList.remove('updating');
-              }, 400);
+                infoEl.classList.add('updating');
+                setTimeout(() => {
+                  trackTitle.textContent = clip.title || '—';
+                  trackArtist.textContent = clip.artist || '—';
+                  infoEl.classList.remove('updating');
+                }, 400);
+              }
 
-              // Check if we have a real cover (not a placeholder)
-              const hasRealCover = clip.image && clip.image.url && !clip.image.url.includes('cover_defaults');
+              // Update artwork if we're live (or forced)
+              if (isLive || forceArtworkUpdate) {
+                // Check if we have a real cover (not a placeholder)
+                const hasRealCover = clip.image && clip.image.url && !clip.image.url.includes('cover_defaults');
 
-              if (hasRealCover) {
-                const imgUrl = clip.image.url.replace('{width}', '400');
-                const fallback = currentStation.logo ? `this.src='${currentStation.logo}'` : `this.parentElement.innerHTML='<div class=placeholder>📻</div>'`;
-                artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="${fallback}">`;
-              } else if (currentStation.logo) {
-                artworkEl.innerHTML = `<img src="${currentStation.logo}" alt="${currentStation.name} Logo">`;
-              } else {
-                artworkEl.innerHTML = '<div class="placeholder">📻</div>';
+                if (hasRealCover) {
+                  const imgUrl = clip.image.url.replace('{width}', '400');
+                  const fallback = currentStation.logo ? `this.src='${currentStation.logo}'` : `this.parentElement.innerHTML='<div class=placeholder>📻</div>'`;
+                  artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="${fallback}">`;
+                } else if (currentStation.logo) {
+                  artworkEl.innerHTML = `<img src="${currentStation.logo}" alt="${currentStation.name} Logo">`;
+                } else {
+                  artworkEl.innerHTML = '<div class="placeholder">📻</div>';
+                }
+                
+                forceArtworkUpdate = false;  // Reset flag after update
               }
             }
           } else {
             // Station only provides show-level metadata (e.g. hr1)
             const newTitle = (item.title || '') + (item.subTitle || '');
 
-            if (newTitle !== lastTitle) {
-              lastTitle = newTitle;
+            if (newTitle !== lastTitle || forceArtworkUpdate) {
+              if (newTitle !== lastTitle) {
+                lastTitle = newTitle;
 
-              infoEl.classList.add('updating');
-              setTimeout(() => {
-                trackTitle.textContent = item.title || '—';
-                trackArtist.textContent = item.subTitle || '';
-                infoEl.classList.remove('updating');
-              }, 400);
+                infoEl.classList.add('updating');
+                setTimeout(() => {
+                  trackTitle.textContent = item.title || '—';
+                  trackArtist.textContent = item.subTitle || '';
+                  infoEl.classList.remove('updating');
+                }, 400);
+              }
 
-              // Use show/moderator image if available (skip placeholders), fallback to station logo
-              const img = item.images && item.images.find(i => i.url && !i.url.includes('cover_defaults'));
-              if (img) {
-                const imgUrl = img.url.replace('{width}', '400');
-                const fallback = currentStation.logo ? `this.src='${currentStation.logo}'` : `this.parentElement.innerHTML='<div class=placeholder>📻</div>'`;
-                artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="${fallback}">`;
-              } else if (currentStation.logo) {
-                artworkEl.innerHTML = `<img src="${currentStation.logo}" alt="${currentStation.name} Logo">`;
-              } else {
-                artworkEl.innerHTML = '<div class="placeholder">📻</div>';
+              // Update artwork if we're live (or forced)
+              if (isLive || forceArtworkUpdate) {
+                // Use show/moderator image if available (skip placeholders), fallback to station logo
+                const img = item.images && item.images.find(i => i.url && !i.url.includes('cover_defaults'));
+                if (img) {
+                  const imgUrl = img.url.replace('{width}', '400');
+                  const fallback = currentStation.logo ? `this.src='${currentStation.logo}'` : `this.parentElement.innerHTML='<div class=placeholder>📻</div>'`;
+                  artworkEl.innerHTML = `<img src="${imgUrl}" alt="Cover" onerror="${fallback}">`;
+                } else if (currentStation.logo) {
+                  artworkEl.innerHTML = `<img src="${currentStation.logo}" alt="${currentStation.name} Logo">`;
+                } else {
+                  artworkEl.innerHTML = '<div class="placeholder">📻</div>';
+                }
+                
+                forceArtworkUpdate = false;  // Reset flag after update
               }
             }
           }
