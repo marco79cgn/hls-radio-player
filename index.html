@@ -567,9 +567,12 @@
     
     // Improved browser detection
     const ua = navigator.userAgent;
+    console.log('🔍 User-Agent:', ua);
     const isSafari = /^((?!chrome|android).)*safari/i.test(ua);
     const isArc = /arc/i.test(ua);
     isChromiumBased = /chrome|chromium|edg/i.test(ua) || (!!window.chrome && !isArc);
+    
+    console.log('Detection results:', { isSafari, isArc, isChromiumBased });
     
     // DEBUG: Check if Arc is detected
     if (isArc) {
