@@ -571,6 +571,11 @@
     const isArc = /arc/i.test(ua);
     isChromiumBased = /chrome|chromium|edg/i.test(ua) || (!!window.chrome && !isArc);
     
+    // DEBUG: Check if Arc is detected
+    if (isArc) {
+      console.log('🔵 Arc browser detected - Cast SDK will NOT be loaded');
+    }
+    
     // Show AirPlay button in Safari
     if (isSafari && window.WebKitPlaybackTargetAvailabilityEvent) {
       airplayBtn.style.display = 'block';
@@ -578,6 +583,8 @@
     
     // Show Google Cast button in Chromium-based browsers (but not Arc - it doesn't support Cast SDK properly)
     if (isChromiumBased && !isSafari && !isArc) {
+      console.log('🟢 Loading Cast SDK for Chromium browser');
+      
       // Dynamically load Cast SDK only for supported browsers
       const castScript = document.createElement('script');
       castScript.src = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';
@@ -590,6 +597,8 @@
       };
       
       document.head.appendChild(castScript);
+    } else {
+      console.log('⚪ Cast SDK NOT loaded (Safari, Arc, or other browser)');
     }
 
     function showAirPlay() {
