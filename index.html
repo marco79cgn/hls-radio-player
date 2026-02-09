@@ -258,6 +258,37 @@
       background: #888;
       cursor: pointer;
     }
+
+    .airplay-row {
+      display: none; /* Hidden by default, shown only in Safari */
+      justify-content: center;
+      margin-top: 16px;
+    }
+
+    .airplay-btn {
+      background: none;
+      border: 2px solid #333;
+      color: #888;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .airplay-btn:hover {
+      border-color: #4a6cf7;
+      color: #fff;
+    }
+
+    .airplay-icon {
+      fill: currentColor;
+      width: 18px;
+      height: 18px;
+    }
   </style>
 </head>
 <body>
@@ -304,9 +335,18 @@
       <svg class="volume-icon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
       <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="80">
     </div>
+
+    <div class="airplay-row" id="airplayRow">
+      <button class="airplay-btn" id="airplayBtn" onclick="showAirPlay()">
+        <svg class="airplay-icon" viewBox="0 0 24 24">
+          <path d="M6 22h12l-6-6zM21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h4v-2H3V5h18v12h-4v2h4c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>
+        </svg>
+        <span>AirPlay</span>
+      </button>
+    </div>
   </div>
 
-  <audio id="audio"></audio>
+  <audio id="audio" x-webkit-airplay="allow" webkit-playsinline></audio>
 
   <script>
     // ── Station Config ──────────────────────────────────────────
@@ -513,6 +553,20 @@
       audio.volume = volumeSlider.value / 100;
     });
     audio.volume = 0.8;
+
+    // ── AirPlay (Safari only) ───────────────────────────────────
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    const airplayRow = document.getElementById('airplayRow');
+    
+    if (isSafari && window.WebKitPlaybackTargetAvailabilityEvent) {
+      airplayRow.style.display = 'flex';
+    }
+
+    function showAirPlay() {
+      if (audio.webkitShowPlaybackTargetPicker) {
+        audio.webkitShowPlaybackTargetPicker();
+      }
+    }
 
     // ── Scrubber / DVR ──────────────────────────────────────────
     let pendingSeek = null;
