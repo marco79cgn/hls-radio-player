@@ -562,23 +562,43 @@
     audio.volume = 0.8;
 
     // ── AirPlay (Safari only) / Google Cast (Chrome) ───────────
-    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-    const isChrome = /chrome|chromium|edg/i.test(navigator.userAgent) && !isSafari;
     const airplayBtn = document.getElementById('airplayBtn');
     const castBtn = document.getElementById('castBtn');
+    
+    // Improved browser detection
+    const ua = navigator.userAgent;
+    const isSafari = /^((?!chrome|android).)*safari/i.test(ua);
+    const isChromiumBased = /chrome|chromium|edg|arc/i.test(ua) || !!window.chrome;
+    
+    console.log('Browser detection:', { ua: ua.substring(0, 100), isSafari, isChromiumBased, hasChrome: !!window.chrome });
     
     // Show AirPlay button in Safari
     if (isSafari && window.WebKitPlaybackTargetAvailabilityEvent) {
       airplayBtn.style.display = 'block';
+      console.log('AirPlay button enabled');
     }
     
-    // Show Google Cast button in Chrome
-    if (isChrome && window.chrome) {
+    // Show Google Cast button in Chromium-based browsers
+    if (isChromiumBased && !isSafari) {
+      // Set up Cast API callback before it loads
       window['__onGCastApiAvailable'] = function(isAvailable) {
+        console.log('Cast API available:', isAvailable);
         if (isAvailable) {
           initializeCast();
+        } else {
+          console.warn('Cast API loaded but not available');
         }
       };
+      
+      // Fallback: check if Cast API is already loaded
+      setTimeout(() => {
+        if (window.cast && window.cast.framework) {
+          console.log('Cast API already loaded (fallback)');
+          initializeCast();
+        } else if (isChromiumBased) {
+          console.warn('Cast API not loaded after 2s');
+        }
+      }, 2000);
     }
 
     function showAirPlay() {
