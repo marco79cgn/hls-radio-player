@@ -569,9 +569,10 @@
     // Improved browser detection
     const ua = navigator.userAgent;
     const isSafari = /^((?!chrome|android).)*safari/i.test(ua);
-    isChromiumBased = /chrome|chromium|edg|arc/i.test(ua) || !!window.chrome;
+    const isArc = /arc/i.test(ua);
+    isChromiumBased = /chrome|chromium|edg/i.test(ua) || (!!window.chrome && !isArc);
     
-    console.log('Browser detection:', { ua: ua.substring(0, 100), isSafari, isChromiumBased, hasChrome: !!window.chrome });
+    console.log('Browser detection:', { ua: ua.substring(0, 100), isSafari, isChromiumBased, isArc, hasChrome: !!window.chrome });
     
     // Show AirPlay button in Safari
     if (isSafari && window.WebKitPlaybackTargetAvailabilityEvent) {
@@ -579,8 +580,8 @@
       console.log('AirPlay button enabled');
     }
     
-    // Show Google Cast button in Chromium-based browsers
-    if (isChromiumBased && !isSafari) {
+    // Show Google Cast button in Chromium-based browsers (but not Arc - it doesn't support Cast SDK properly)
+    if (isChromiumBased && !isSafari && !isArc) {
       console.log('Setting up Cast for Chromium browser');
       
       // Set up Cast API callback before it loads
