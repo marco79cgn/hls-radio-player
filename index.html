@@ -309,6 +309,7 @@
   <audio id="audio"></audio>
 
   <script>
+  <script>
     // ── Station Config ──────────────────────────────────────────
     const STATIONS = [
       {
@@ -356,6 +357,8 @@
     let hls = null;
     let isPlaying = false;
     let isSeeking = false;
+    let isSeekInProgress = false;  // Track active seek operations
+    let frozenLiveRef = null;  // Frozen live reference for time-behind calculation
     let lastTitle = '';
 
     // ── Build station buttons ───────────────────────────────────
@@ -408,39 +411,83 @@
 
     function initPlayer() {
       stationName.textContent = currentStation.name;
+      
+      // Check what's available
       const canNative = audio.canPlayType('application/vnd.apple.mpegurl');
+      const hlsAvailable = typeof Hls !== 'undefined';
+      const hlsSupported = hlsAvailable && Hls.isSupported();
 
-      if (canNative) {
+      // FORCE hls.js on Chromium even if canNative returns something
+      // (Chromium sometimes reports "maybe" but native HLS DVR is broken)
+      const isChromium = /Chrome|Chromium|Edg/.test(navigator.userAgent);
+
+      // Decision tree: Chromium → hls.js, Safari → native, fallback → hls.js
+      if (isChromium && hlsSupported) {
+        // CHROMIUM PATH: Force hls.js (better DVR support)
+        setupHlsJs();
+      } else if (canNative && !isChromium) {
+        // SAFARI PATH: Use native HLS
         audio.src = currentStation.stream;
         audio.addEventListener('loadedmetadata', () => {
           updateScrubber();
         }, { once: true });
-      } else if (Hls.isSupported()) {
-        hls = new Hls({
-          liveDurationInfinity: false,
-          liveBackBufferLength: 1800,
-          backBufferLength: 1800,
-          maxBufferLength: 600,
-          maxMaxBufferLength: 1800,
-          lowLatencyMode: false,
-          liveSyncDurationCount: 3,
-          liveMaxLatencyDurationCount: 12,
-          enableWorker: true,
-        });
-        hls.loadSource(currentStation.stream);
-        hls.attachMedia(audio);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          updateScrubber();
-        });
-        hls.on(Hls.Events.ERROR, (e, data) => {
-          if (data.fatal) {
-            console.error('HLS fatal error', data);
-            hls.destroy();
-            hls = null;
-            setTimeout(initPlayer, 3000);
-          }
-        });
+      } else if (hlsSupported) {
+        // FALLBACK: hls.js if available
+        setupHlsJs();
       }
+    }
+
+    function setupHlsJs() {
+      hls = new Hls({
+        // DVR / Live Seeking Configuration (optimized for Chromium)
+        liveDurationInfinity: false,
+        
+        // Back buffer: how much DVR history to keep (30 min = 1800s)
+        liveBackBufferLength: 1800,
+        backBufferLength: 1800,
+        
+        // Forward buffer: keep moderate to avoid memory issues
+        maxBufferLength: 600,
+        maxMaxBufferLength: 1800,
+        
+        // Low latency OFF for better DVR seeking
+        lowLatencyMode: false,
+        
+        // Sync settings: CRITICAL - allow user to stay far behind live without auto-catch-up
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: Infinity,  // NEVER auto-snap back to live!
+        
+        // Force loading from start position on seek (critical for Chromium DVR)
+        startPosition: -1,
+        
+        // Enable worker for better performance
+        enableWorker: true,
+        
+        // Fragment loading behavior
+        manifestLoadingTimeOut: 10000,
+        manifestLoadingMaxRetry: 4,
+        levelLoadingTimeOut: 10000,
+        levelLoadingMaxRetry: 4,
+        
+        // Debug (can be disabled in production)
+        debug: false,
+      });
+      
+      hls.loadSource(currentStation.stream);
+      hls.attachMedia(audio);
+      
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        updateScrubber();
+      });
+      
+      hls.on(Hls.Events.ERROR, (e, data) => {
+        if (data.fatal) {
+          console.error('[HLS] Fatal error:', data);
+          hls.destroy();
+          hls = null;
+          setTimeout(initPlayer, 3000);
+        }
+      });
     }
 
     // ── Play / Pause ────────────────────────────────────────────
@@ -469,31 +516,66 @@
     audio.volume = 0.8;
 
     // ── Scrubber / DVR ──────────────────────────────────────────
-    function getSeekableRange() {
-      // hls.js exposes a stable live timeline even when media.seekable is tiny in Chromium
-      if (hls) {
-        const details = hls.latestLevelDetails ||
-          ((hls.levels || []).find(l => l && l.details && l.details.fragments && l.details.fragments.length > 1) || {}).details;
+    let pendingSeek = null;
+    let seekRetryCount = 0;
+    const MAX_SEEK_RETRIES = 3;
 
-        if (details && details.fragments && details.fragments.length > 1) {
-          const start = details.fragments[0].start;
-          const lastFrag = details.fragments[details.fragments.length - 1];
-          const end = Number.isFinite(details.edge) ? details.edge : (lastFrag.start + lastFrag.duration);
-          if (Number.isFinite(start) && Number.isFinite(end) && end - start > 5) {
-            return { start, end, source: 'hls' };
+    function getSeekableRange() {
+      // PRIORITY 1: hls.js level details (most reliable for Chromium DVR)
+      if (hls) {
+        if (hls.levels && hls.levels.length > 0) {
+          // Try current level first
+          const currentLevel = hls.levels[hls.currentLevel];
+          let details = currentLevel && currentLevel.details;
+
+          // Fallback: find any level with valid fragments
+          if (!details || !details.fragments || details.fragments.length < 2) {
+            for (let i = 0; i < hls.levels.length; i++) {
+              const level = hls.levels[i];
+              if (level && level.details && level.details.fragments && level.details.fragments.length > 1) {
+                details = level.details;
+                break;
+              }
+            }
+          }
+
+          // Also check latestLevelDetails as fallback
+          if (!details || !details.fragments || details.fragments.length < 2) {
+            details = hls.latestLevelDetails;
+          }
+
+          if (details && details.fragments && details.fragments.length > 0) {
+            const frags = details.fragments;
+            const start = frags[0].start;
+            
+            // Try multiple methods to get the end position
+            let end;
+            if (Number.isFinite(details.edge)) {
+              end = details.edge;
+            } else if (Number.isFinite(details.totalduration)) {
+              end = start + details.totalduration;
+            } else {
+              const lastFrag = frags[frags.length - 1];
+              end = lastFrag.start + lastFrag.duration;
+            }
+
+            if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+              return { start, end, source: 'hls-details', fragments: frags.length };
+            }
           }
         }
       }
 
+      // PRIORITY 2: media.seekable (unreliable in Chromium for HLS DVR)
       if (audio.seekable.length > 0) {
         const start = audio.seekable.start(0);
         const end = audio.seekable.end(audio.seekable.length - 1);
         if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
-          return { start, end, source: 'media' };
+          return { start, end, source: 'media-seekable' };
         }
       }
 
-      // Fallback for VOD streams with finite duration
+      // PRIORITY 3: VOD fallback
       if (Number.isFinite(audio.duration) && audio.duration > 0) {
         return { start: 0, end: audio.duration, source: 'vod' };
       }
@@ -501,33 +583,59 @@
       return null;
     }
 
-    function updateScrubber() {
-      if (isSeeking) { requestAnimationFrame(updateScrubber); return; }
+    function getLiveReference(end) {
+      // In hls.js live streams, the safe "live" point is often liveSyncPosition,
+      // not the absolute playlist edge. Using range end can incorrectly show users
+      // as "behind" even when they're effectively live.
+      if (hls && Number.isFinite(hls.liveSyncPosition)) {
+        return Math.min(end, hls.liveSyncPosition);
+      }
+      return end;
+    }
 
+    function updateScrubber() {
       const rangeInfo = getSeekableRange();
       if (!rangeInfo) {
-        scrubber.value = 1000;
-        scrubber.disabled = true;
-        timeOffset.textContent = 'Live';
-        liveBadge.classList.remove('behind');
+        if (!isSeeking && !isSeekInProgress) {
+          scrubber.value = 1000;
+          scrubber.disabled = true;
+          timeOffset.textContent = 'Live';
+          liveBadge.classList.remove('behind');
+        }
         requestAnimationFrame(updateScrubber);
         return;
       }
 
-      scrubber.disabled = false;
       const { start, end } = rangeInfo;
       const range = end - start;
 
-      const pos = ((audio.currentTime - start) / range) * 1000;
-      scrubber.value = Math.min(1000, Math.max(0, pos));
-
-      const behindSec = Math.max(0, end - audio.currentTime);
-      if (behindSec < 5) {
+      // ALWAYS update time display (even during seeks)
+      // Key insight: When user seeks back, they want to see the countdown from THAT moment,
+      // not the ever-moving live edge. So we freeze the live ref at seek time.
+      const currentLiveRef = getLiveReference(end);
+      
+      // If no frozen ref yet, or we're very close to live, use current live edge
+      if (frozenLiveRef === null || audio.currentTime >= (currentLiveRef - 6)) {
+        frozenLiveRef = currentLiveRef;
+      }
+      // Otherwise keep the frozen ref (it doesn't move forward with the live edge)
+      
+      const behindSec = Math.max(0, frozenLiveRef - audio.currentTime);
+      
+      if (behindSec < 6) {
         timeOffset.textContent = 'Live';
         liveBadge.classList.remove('behind');
+        frozenLiveRef = null;  // Reset frozen ref when we're live
       } else {
         timeOffset.textContent = '-' + formatTime(behindSec);
         liveBadge.classList.add('behind');
+      }
+
+      // ONLY update scrubber position if user is NOT dragging and no seek in progress
+      if (!isSeeking && !isSeekInProgress) {
+        scrubber.disabled = false;
+        const pos = ((audio.currentTime - start) / range) * 1000;
+        scrubber.value = Math.min(1000, Math.max(0, pos));
       }
 
       requestAnimationFrame(updateScrubber);
@@ -546,18 +654,90 @@
       const { start, end } = rangeInfo;
       const range = end - start;
       const target = start + (scrubber.value / 1000) * range;
-      const behindSec = Math.max(0, end - target);
-      timeOffset.textContent = behindSec < 5 ? 'Live' : '-' + formatTime(behindSec);
+      const liveRef = getLiveReference(end);
+      const behindSec = Math.max(0, liveRef - target);
+      timeOffset.textContent = behindSec < 6 ? 'Live' : '-' + formatTime(behindSec);
     });
 
     function seekTo(target) {
       if (!Number.isFinite(target)) return;
 
-      if (hls) {
-        // In Chromium this helps hls.js load from a DVR offset even when media.seekable is limited
-        hls.startLoad(target);
+      // Cancel any pending retry
+      if (pendingSeek) {
+        clearTimeout(pendingSeek);
+        pendingSeek = null;
       }
-      audio.currentTime = target;
+      seekRetryCount = 0;
+
+      performSeek(target);
+    }
+
+    function performSeek(target) {
+      if (!Number.isFinite(target)) return;
+
+      const rangeInfo = getSeekableRange();
+      if (!rangeInfo) return;
+
+      // Clamp target to valid range
+      target = Math.max(rangeInfo.start, Math.min(rangeInfo.end, target));
+
+      // Mark seek in progress to prevent scrubber updates
+      isSeekInProgress = true;
+
+      if (hls) {
+        
+        // CRITICAL FOR CHROMIUM: hls.js needs to reload fragments from the target position
+        // We do this BEFORE setting currentTime to ensure the buffer is ready
+        
+        // Method 1: Use hls.startLoad (forces fragment loading from position)
+        try {
+          hls.startLoad(target);
+        } catch (e) {
+          console.error('startLoad error:', e);
+        }
+
+        // Method 2: If available, directly set nextLoadPosition
+        if (hls.streamController && hls.streamController.nextLoadPosition !== undefined) {
+          hls.streamController.nextLoadPosition = target;
+        }
+
+        // Small delay to let hls.js prepare fragments before media seeks
+        setTimeout(() => {
+          audio.currentTime = target;
+
+          // Verify seek actually happened (Chromium often ignores seeks outside tiny seekable range)
+          setTimeout(() => {
+            const actualTime = audio.currentTime;
+            const seekDiff = Math.abs(actualTime - target);
+            
+            // If seek failed (time didn't change much), retry with different approach
+            if (seekDiff > 5 && seekRetryCount < MAX_SEEK_RETRIES) {
+              seekRetryCount++;
+              
+              // Retry strategy: reload hls completely from target position
+              if (hls) {
+                hls.stopLoad();
+                setTimeout(() => {
+                  hls.startLoad(target);
+                  audio.currentTime = target;
+                }, 100);
+              }
+            } else if (seekDiff <= 5) {
+              seekRetryCount = 0;
+            }
+          }, 200);
+        }, 50);
+      } else {
+        // Native HLS (Safari) - simpler approach
+        audio.currentTime = target;
+      }
+
+      // Safety: clear seek lock after 500ms if seeked event doesn't fire
+      setTimeout(() => {
+        if (isSeekInProgress) {
+          isSeekInProgress = false;
+        }
+      }, 500);
     }
 
     function commitSeek() {
@@ -568,30 +748,64 @@
       const { start, end } = rangeInfo;
       const range = end - start;
       const target = start + (scrubber.value / 1000) * range;
+      
+      // Freeze the live reference at seek time
+      const liveRef = getLiveReference(end);
+      if (target < (liveRef - 6)) {
+        frozenLiveRef = liveRef;
+      }
+      
       seekTo(target);
     }
 
     scrubber.addEventListener('mouseup', commitSeek);
     scrubber.addEventListener('touchend', commitSeek);
 
+    audio.addEventListener('seeked', () => {
+      // Clear any pending retry after successful seek
+      if (pendingSeek) {
+        clearTimeout(pendingSeek);
+        pendingSeek = null;
+      }
+
+      // Allow scrubber updates again after seek completes
+      isSeekInProgress = false;
+    });
+
     function skip(seconds) {
       const rangeInfo = getSeekableRange();
       if (!rangeInfo) return;
 
       const { start, end } = rangeInfo;
-      let target = audio.currentTime + seconds;
+      const current = audio.currentTime;
+      let target = current + seconds;
+      
+      // Clamp to valid range
       target = Math.max(start, Math.min(end, target));
+
+      // Update frozen ref if we're seeking away from live
+      const liveRef = getLiveReference(end);
+      if (target < (liveRef - 6) && frozenLiveRef === null) {
+        frozenLiveRef = liveRef;
+      }
+
       seekTo(target);
     }
 
     function goLive() {
+      // Clear frozen ref - we're going back to live
+      frozenLiveRef = null;
+      
+      // Try hls.js liveSyncPosition first (most accurate)
       if (hls && Number.isFinite(hls.liveSyncPosition)) {
         seekTo(hls.liveSyncPosition);
         return;
       }
 
+      // Fallback to seekable range end
       const rangeInfo = getSeekableRange();
       if (!rangeInfo) return;
+      
       seekTo(rangeInfo.end);
     }
 
